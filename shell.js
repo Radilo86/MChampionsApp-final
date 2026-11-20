@@ -132,6 +132,8 @@ function shellApi(engine) {
         },
         async importAssets(files, onProgress) { return importAssets(files, onProgress); },
         async assetCount() { const c = await caches.open("marvel-user-assets"); return (await c.keys()).length; },
+        // pictures only (the cache also keeps internal files such as the index of custom cards)
+        async pictureCount() { const c = await caches.open("marvel-user-assets"); return (await c.keys()).filter((r) => !/__index|\.json$/i.test(new URL(r.url).pathname)).length; },
         async clearAssets() { localStorage.removeItem("marvel-pack"); return caches.delete("marvel-user-assets"); },
         packInfo, installPack,
         portraitPhone, portraitTouch,
@@ -236,17 +238,29 @@ async function packInfo() {
     let manifest;
     try {
         const r = await fetch(new URL("images/manifest.json", base), { cache: "no-store" });
-        if (!r.ok) return { available: false };
+        if (!r.ok) {
+            const st = JSON.parse(localStorage.getItem("marvel-pack") || "null");
+            return { available: false, missing: true, status: r.status, installed: !!(st && st.complete), count: st && st.count };
+        }
         manifest = await r.json();
     } catch (e) {
         // offline: we can still report what is installed
         const st = JSON.parse(localStorage.getItem("marvel-pack") || "null");
-        return st && st.complete ? { available: true, installed: true, count: st.count, bytes: st.bytes, version: st.version, offline: true } : { available: false };
+        return st && st.complete && (await picturesPresent(st.count)) ? { available: true, installed: true, count: st.count, bytes: st.bytes, version: st.version, offline: true } : { available: false };
     }
-    const st = JSON.parse(localStorage.getItem("marvel-pack") || "{}");
+    let st = JSON.parse(localStorage.getItem("marvel-pack") || "{}");
+    // the phone (Safari above all) may delete the pictures to free space and keep this note: check they are really there
+    if (st.complete && !(await picturesPresent(st.count))) { st = {}; localStorage.removeItem("marvel-pack"); }
     const same = st.version === manifest.version;
     return { available: true, version: manifest.version, count: manifest.count, bytes: manifest.bytes, installed: same && !!st.complete,
         doneChunks: same ? (st.chunks || []) : [], chunkCount: manifest.chunks.length };
+}
+async function picturesPresent(expected) {
+    try {
+        const c = await caches.open("marvel-user-assets");
+        const n = (await c.keys()).filter((r) => !/__index|\.json$/i.test(new URL(r.url).pathname)).length;
+        return n >= Math.max(1, Math.floor((expected || 1) * 0.9));
+    } catch (e) { return true; }
 }
 let packRunning = false;
 async function installPack(onProgress, signal) {
